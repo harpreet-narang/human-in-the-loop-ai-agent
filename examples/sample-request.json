@@ -1,0 +1,9 @@
+{
+  "request": "Prepare a reply to a customer asking for a 20% discount. If approved, update the CRM note as well.",
+  "requested_by": "sales-ops",
+  "context": {
+    "customer": "Northstar Labs",
+    "current_plan": "Growth",
+    "request_reason": "Annual renewal"
+  }
+}
