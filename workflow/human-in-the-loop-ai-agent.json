@@ -1,0 +1,607 @@
+{
+  "name": "Human-in-the-Loop AI Agent - Portfolio Demo",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "hitl-action-request",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "request-webhook",
+      "name": "Business Request Webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "const src = $json.body ?? $json;\nconst request = String(src.request ?? '').trim();\nif (!request) throw new Error('request is required');\n\nreturn [{\n  json: {\n    request_id: `req_${Date.now()}_${Math.random().toString(36).slice(2,8)}`,\n    request,\n    requested_by: String(src.requested_by ?? 'unknown').trim(),\n    context: src.context && typeof src.context === 'object' ? src.context : {},\n    received_at: new Date().toISOString()\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ],
+      "id": "normalize-request",
+      "name": "Normalize Request"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Convert this business request into one proposed action.\\n\\nRequest: {{ $json.request }}\\nRequested by: {{ $json.requested_by }}\\nContext: {{ JSON.stringify($json.context) }}\\n\\nChoose one action_type from: draft_only, internal_summary, send_email, publish_content, update_crm, trigger_workflow, apply_discount, delete_record, financial_change, account_change, other.\\n\\nDo not claim the action has been executed. Produce a proposal only.",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are an operations planning assistant. Convert requests into conservative, reviewable action proposals. Never imply authorization. Never invent external facts or claim that an action has already happened."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.6,
+      "position": [
+        480,
+        0
+      ],
+      "id": "proposal-chain",
+      "name": "Generate AI Action Proposal"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "gpt-4o-mini"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        480,
+        256
+      ],
+      "id": "chat-model",
+      "name": "Chat Model"
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\\n  \"action_type\": \"apply_discount\",\\n  \"target\": \"Northstar Labs\",\\n  \"proposed_action\": \"Offer a 20% renewal discount and add an approved note to the CRM.\",\\n  \"draft_content\": \"Draft customer-facing message if relevant.\",\\n  \"reasoning\": \"This is a commercial concession and external communication.\",\\n  \"confidence\": 0.86,\\n  \"assumptions\": [\"The reviewer has authority to approve the concession\"]\\n}",
+        "autoFix": true
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        672,
+        256
+      ],
+      "id": "proposal-parser",
+      "name": "Proposal Output Parser"
+    },
+    {
+      "parameters": {
+        "jsCode": "const request = $('Normalize Request').first().json;\nconst raw = $json.output && typeof $json.output === 'object' ? $json.output : $json;\nconst proposal = {\n  action_type: String(raw.action_type ?? 'other').toLowerCase(),\n  target: String(raw.target ?? 'unspecified'),\n  proposed_action: String(raw.proposed_action ?? ''),\n  draft_content: String(raw.draft_content ?? ''),\n  reasoning: String(raw.reasoning ?? ''),\n  confidence: Math.max(0, Math.min(1, Number(raw.confidence ?? 0) || 0)),\n  assumptions: Array.isArray(raw.assumptions) ? raw.assumptions : []\n};\n\nconst high = new Set(['apply_discount','delete_record','financial_change','account_change']);\nconst medium = new Set(['send_email','publish_content','update_crm','trigger_workflow']);\n\nlet risk_level = 'medium';\nif (high.has(proposal.action_type)) risk_level = 'high';\nelse if (['draft_only','internal_summary'].includes(proposal.action_type)) risk_level = 'low';\nelse if (medium.has(proposal.action_type)) risk_level = 'medium';\n\nreturn [{\n  json: {\n    ...request,\n    proposal,\n    risk_level,\n    requires_human_approval: true,\n    policy_reason: risk_level === 'high'\n      ? 'High-impact or potentially irreversible business action.'\n      : risk_level === 'medium'\n      ? 'External communication or business-system side effect.'\n      : 'Portfolio policy requires review even for low-risk actions.',\n    proposal_created_at: new Date().toISOString()\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        752,
+        0
+      ],
+      "id": "risk-policy",
+      "name": "Deterministic Risk Policy"
+    },
+    {
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "={{ JSON.stringify({ ...$json, approval_status: 'waiting_for_human', approval_url: $execution.resumeUrl, allowed_decisions: ['approve','revise','reject'] }) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1008,
+        0
+      ],
+      "id": "approval-packet",
+      "name": "Prepare Approval Packet"
+    },
+    {
+      "parameters": {
+        "resume": "webhook",
+        "options": {
+          "webhookSuffix": "decision"
+        }
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1264,
+        0
+      ],
+      "id": "wait-decision",
+      "name": "Wait for Human Decision"
+    },
+    {
+      "parameters": {
+        "jsCode": "const packet = $('Prepare Approval Packet').first().json;\nconst body = $json.body ?? $json;\nlet decision = String(body.decision ?? '').trim().toLowerCase();\nif (!['approve','revise','reject'].includes(decision)) decision = 'reject';\n\nreturn [{\n  json: {\n    ...packet,\n    first_decision: decision,\n    first_reviewer: String(body.reviewer ?? 'unknown'),\n    first_feedback: String(body.feedback ?? ''),\n    first_decision_at: new Date().toISOString()\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        0
+      ],
+      "id": "normalize-decision",
+      "name": "Normalize Human Decision"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "approved1",
+              "leftValue": "={{ $json.first_decision }}",
+              "rightValue": "approve",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1760,
+        0
+      ],
+      "id": "approved-first",
+      "name": "Approved?"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "revise1",
+              "leftValue": "={{ $json.first_decision }}",
+              "rightValue": "revise",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1984,
+        128
+      ],
+      "id": "revise-first",
+      "name": "Revision Requested?"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Revise the proposed action using the reviewer's feedback.\\n\\nOriginal request: {{ $json.request }}\\nPrevious proposal: {{ JSON.stringify($json.proposal) }}\\nReviewer feedback: {{ $json.first_feedback }}\\n\\nReturn a complete replacement proposal. Do not execute anything and do not treat revision as approval.",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You revise business action proposals after explicit human feedback. Preserve the original objective unless the reviewer changes it. Never claim execution or approval."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.6,
+      "position": [
+        2224,
+        32
+      ],
+      "id": "revision-chain",
+      "name": "Revise Proposal with Feedback"
+    },
+    {
+      "parameters": {
+        "jsCode": "const base = $('Normalize Human Decision').first().json;\nconst raw = $json.output && typeof $json.output === 'object' ? $json.output : $json;\nconst revised = {\n  action_type: String(raw.action_type ?? base.proposal.action_type ?? 'other').toLowerCase(),\n  target: String(raw.target ?? base.proposal.target ?? 'unspecified'),\n  proposed_action: String(raw.proposed_action ?? ''),\n  draft_content: String(raw.draft_content ?? ''),\n  reasoning: String(raw.reasoning ?? ''),\n  confidence: Math.max(0, Math.min(1, Number(raw.confidence ?? 0) || 0)),\n  assumptions: Array.isArray(raw.assumptions) ? raw.assumptions : []\n};\n\nconst high = new Set(['apply_discount','delete_record','financial_change','account_change']);\nconst low = new Set(['draft_only','internal_summary']);\nconst revised_risk_level = high.has(revised.action_type) ? 'high' : low.has(revised.action_type) ? 'low' : 'medium';\n\nreturn [{\n  json: {\n    ...base,\n    revised_proposal: revised,\n    revised_risk_level,\n    revision_created_at: new Date().toISOString(),\n    approval_status: 'waiting_for_second_human_decision'\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2464,
+        32
+      ],
+      "id": "revised-risk",
+      "name": "Reapply Risk Policy"
+    },
+    {
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "={{ JSON.stringify({ ...$json, second_approval_url: $execution.resumeUrl, second_allowed_decisions: ['approve','reject'] }) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2704,
+        32
+      ],
+      "id": "revised-packet",
+      "name": "Prepare Revised Approval Packet"
+    },
+    {
+      "parameters": {
+        "resume": "webhook",
+        "options": {
+          "webhookSuffix": "second-decision"
+        }
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2944,
+        32
+      ],
+      "id": "wait-second",
+      "name": "Wait for Second Human Decision"
+    },
+    {
+      "parameters": {
+        "jsCode": "const packet = $('Prepare Revised Approval Packet').first().json;\nconst body = $json.body ?? $json;\nlet decision = String(body.decision ?? '').trim().toLowerCase();\nif (!['approve','reject'].includes(decision)) decision = 'reject';\n\nreturn [{\n  json: {\n    ...packet,\n    second_decision: decision,\n    second_reviewer: String(body.reviewer ?? 'unknown'),\n    second_feedback: String(body.feedback ?? ''),\n    second_decision_at: new Date().toISOString()\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3184,
+        32
+      ],
+      "id": "normalize-second",
+      "name": "Normalize Second Decision"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "approved2",
+              "leftValue": "={{ $json.second_decision }}",
+              "rightValue": "approve",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3424,
+        32
+      ],
+      "id": "approved-second",
+      "name": "Revised Proposal Approved?"
+    },
+    {
+      "parameters": {
+        "jsCode": "const proposal = $json.revised_proposal ?? $json.proposal;\nreturn [{\n  json: {\n    ...$json,\n    final_status: 'approved',\n    execution_status: 'simulated_success',\n    executed_action_type: proposal.action_type,\n    executed_target: proposal.target,\n    executed_payload: proposal,\n    executed_at: new Date().toISOString(),\n    executor_note: 'Demo executor only. Replace this node with an allow-listed API or sub-workflow in production.'\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3696,
+        -96
+      ],
+      "id": "execute-demo",
+      "name": "Execute Approved Action (Demo)"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    ...$json,\n    final_status: 'rejected',\n    execution_status: 'not_executed',\n    executed_at: null,\n    executor_note: 'No action was executed because the human decision was reject or invalid.'\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3696,
+        192
+      ],
+      "id": "reject-safe",
+      "name": "Stop Safely - No Execution"
+    },
+    {
+      "parameters": {
+        "jsCode": "const j = $json;\nconst finalProposal = j.revised_proposal ?? j.proposal ?? {};\nreturn [{\n  json: {\n    audit_id: `audit_${Date.now()}_${Math.random().toString(36).slice(2,8)}`,\n    request_id: j.request_id,\n    request: j.request,\n    requested_by: j.requested_by,\n    action_type: finalProposal.action_type ?? 'unknown',\n    target: finalProposal.target ?? 'unspecified',\n    initial_risk_level: j.risk_level,\n    revised_risk_level: j.revised_risk_level ?? null,\n    first_decision: j.first_decision ?? null,\n    first_reviewer: j.first_reviewer ?? null,\n    first_feedback: j.first_feedback ?? null,\n    second_decision: j.second_decision ?? null,\n    second_reviewer: j.second_reviewer ?? null,\n    second_feedback: j.second_feedback ?? null,\n    final_status: j.final_status,\n    execution_status: j.execution_status,\n    executor_note: j.executor_note,\n    completed_at: new Date().toISOString()\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3952,
+        48
+      ],
+      "id": "audit-record",
+      "name": "Create Audit Record"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Business Request Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Request": {
+      "main": [
+        [
+          {
+            "node": "Generate AI Action Proposal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Generate AI Action Proposal",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Revise Proposal with Feedback",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Proposal Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Generate AI Action Proposal",
+            "type": "ai_outputParser",
+            "index": 0
+          },
+          {
+            "node": "Revise Proposal with Feedback",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate AI Action Proposal": {
+      "main": [
+        [
+          {
+            "node": "Deterministic Risk Policy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deterministic Risk Policy": {
+      "main": [
+        [
+          {
+            "node": "Prepare Approval Packet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Approval Packet": {
+      "main": [
+        [
+          {
+            "node": "Wait for Human Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for Human Decision": {
+      "main": [
+        [
+          {
+            "node": "Normalize Human Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Human Decision": {
+      "main": [
+        [
+          {
+            "node": "Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved?": {
+      "main": [
+        [
+          {
+            "node": "Execute Approved Action (Demo)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Revision Requested?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Revision Requested?": {
+      "main": [
+        [
+          {
+            "node": "Revise Proposal with Feedback",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop Safely - No Execution",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Revise Proposal with Feedback": {
+      "main": [
+        [
+          {
+            "node": "Reapply Risk Policy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reapply Risk Policy": {
+      "main": [
+        [
+          {
+            "node": "Prepare Revised Approval Packet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Revised Approval Packet": {
+      "main": [
+        [
+          {
+            "node": "Wait for Second Human Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for Second Human Decision": {
+      "main": [
+        [
+          {
+            "node": "Normalize Second Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Second Decision": {
+      "main": [
+        [
+          {
+            "node": "Revised Proposal Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Revised Proposal Approved?": {
+      "main": [
+        [
+          {
+            "node": "Execute Approved Action (Demo)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop Safely - No Execution",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Approved Action (Demo)": {
+      "main": [
+        [
+          {
+            "node": "Create Audit Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stop Safely - No Execution": {
+      "main": [
+        [
+          {
+            "node": "Create Audit Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "portfolio-hitl-agent-v1",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}
