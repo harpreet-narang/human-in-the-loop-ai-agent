@@ -1,0 +1,17 @@
+{
+  "approve": {
+    "decision": "approve",
+    "reviewer": "harpreet",
+    "feedback": "Approved as proposed."
+  },
+  "revise": {
+    "decision": "revise",
+    "reviewer": "harpreet",
+    "feedback": "Reduce the discount to 10% and make the email less formal."
+  },
+  "reject": {
+    "decision": "reject",
+    "reviewer": "harpreet",
+    "feedback": "Do not offer a discount."
+  }
+}
