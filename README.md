@@ -272,11 +272,13 @@ During the later testing pass, the workflow will be validated against scenarios 
 
 Execution screenshots and test results will be added after validation.
 
-## Acknowledgements
+## Project background
 
-The workflow pattern was informed by public n8n approval examples, including **enzoemir1/n8n-telegram-approval**, particularly the use of n8n Wait nodes and resume webhooks.
+This repository is a **public, standalone implementation of human-approval patterns I use when designing AI automations for real workflows**.
 
-This repository is an independent implementation with its own action schema, deterministic risk policy, revision path, second approval gate, audit model, and safe executor.
+It was created specifically for the portfolio to demonstrate approval gates, revision handling, deterministic risk policy, auditability, and safe execution without exposing any private production workflow.
+
+The action schema, risk policy, approval flow, revision path, audit model, and demo executor were created specifically for this repository.
 
 ## License
 
